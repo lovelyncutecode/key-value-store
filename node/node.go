@@ -45,10 +45,10 @@ var keyValStorage *KeyValueStorage
 
 func NewKeyValueStorage(config *KeyValueStorageConfig) (*KeyValueStorage, error) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/set", setKey)
-	mux.HandleFunc("/get", getKey)
-	mux.HandleFunc("/internal/set", saveNewData)
-	mux.HandleFunc("/internal/get", getNewData)
+	mux.HandleFunc("/set", responseFormatter(setKey))
+	mux.HandleFunc("/get", responseFormatter(getKey))
+	mux.HandleFunc("/internal/set", responseFormatter(saveNewData))
+	mux.HandleFunc("/internal/get", responseFormatter(getNewData))
 	srv := &http.Server{
 		Addr:    config.Host + ":" + strconv.Itoa(config.Port),
 		Handler: mux,
