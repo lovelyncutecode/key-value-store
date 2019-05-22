@@ -25,9 +25,8 @@ type (
 	KeyValueStorage struct {
 		*sync.Mutex
 		storage        map[string]StorageRecord
-		lastUpdateTime int64
-		runningNode    *http.Client
-		runningNodeURL string
+		runningSourceNode    *http.Client
+		runningSourceNodeURL string
 		server         *http.Server
 		config         *KeyValueStorageConfig
 	}
@@ -35,8 +34,8 @@ type (
 	KeyValueStorageConfig struct {
 		Host                      string  `json:"host"`
 		Port                      int     `json:"port"`
-		NodeHost                  *string `json:"node_host,omitempty"`
-		NodePort                  *int    `json:"node_port,omitempty"`
+		SourceNodeHost            *string `json:"node_host,omitempty"`
+		SourceNodePort            *int    `json:"node_port,omitempty"`
 		RunningNodeRequestTimeout int     `json:"request_timeout"`
 	}
 )
@@ -53,41 +52,43 @@ func NewKeyValueStorage(config *KeyValueStorageConfig) (*KeyValueStorage, error)
 		Addr:    config.Host + ":" + strconv.Itoa(config.Port),
 		Handler: mux,
 	}
-	log.Println("started server on " + config.Host + ":" + strconv.Itoa(config.Port))
+
 	keyValStorage = &KeyValueStorage{
 		Mutex:          new(sync.Mutex),
 		storage:        make(map[string]StorageRecord),
-		lastUpdateTime: 0,
 		server:         srv,
 		config:         config,
 	}
-	if config.NodeHost == nil && config.NodePort == nil {
+	if config.SourceNodeHost == nil && config.SourceNodePort == nil {
 		return keyValStorage, nil
 	}
 
 	nodeClient := new(http.Client)
-	keyValStorage.runningNode = nodeClient
-	keyValStorage.runningNodeURL = "http://" + *config.NodeHost + ":" + strconv.Itoa(*config.NodePort)
+	keyValStorage.runningSourceNode = nodeClient
+	keyValStorage.runningSourceNodeURL = "http://" + *config.SourceNodeHost + ":" + strconv.Itoa(*config.SourceNodePort)
 	return keyValStorage, nil
 }
 
 func (kvs *KeyValueStorage) Run() {
 	var goroutinesNum int
-	if kvs.runningNode == nil {
+	if kvs.runningSourceNode == nil {
 		goroutinesNum = 1
 	} else {
 		goroutinesNum = 2
 	}
+
 	stop := make(chan bool, goroutinesNum)
 	sig := make(chan os.Signal)
 	signal.Notify(sig, os.Interrupt)
 	wg := new(sync.WaitGroup)
 	wg.Add(1)
 	go kvs.runNode(stop, wg)
-	if kvs.runningNode != nil {
+
+	if kvs.runningSourceNode != nil {
 		wg.Add(1)
 		go kvs.runClient(stop, wg)
 	}
+
 	<-sig
 	for i := 0; i < goroutinesNum; i++ {
 		stop <- true
@@ -96,20 +97,23 @@ func (kvs *KeyValueStorage) Run() {
 }
 
 func (kvs *KeyValueStorage) runNode(stop chan bool, wg *sync.WaitGroup) {
+	defer wg.Done()
+
 	go func() {
 		<-stop
-		defer wg.Done()
 		err := kvs.server.Shutdown(context.Background())
 		if err != nil {
 			log.Fatal(err)
 		}
 	}()
+
+	log.Println("started server on " + kvs.config.Host + ":" + strconv.Itoa(kvs.config.Port))
 	if err := kvs.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatal(errors.WithStack(err))
+		log.Fatal(err)
 	}
 }
 
-func (kvs *KeyValueStorage) SaveRecord(records map[string]string) {
+func (kvs *KeyValueStorage) SetRecord(records map[string]string) {
 	keyValStorage.Lock()
 	defer keyValStorage.Unlock()
 
@@ -152,7 +156,7 @@ func (kvs *KeyValueStorage) runClient(stop chan bool, wg *sync.WaitGroup) {
 }
 
 func (kvs *KeyValueStorage) exchangeNewData() error {
-	err := kvs.getNewData()
+	err := kvs.retrieveNewData()
 	if err != nil {
 		return err
 	}
@@ -161,16 +165,8 @@ func (kvs *KeyValueStorage) exchangeNewData() error {
 	return err
 }
 
-func (kvs *KeyValueStorage) getNewData() error {
-	req, err := http.NewRequest("GET", kvs.runningNodeURL+"/internal/get", nil)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	q := req.URL.Query()
-	q.Set("last_update_time", strconv.Itoa(int(kvs.lastUpdateTime)))
-	req.URL.RawQuery = q.Encode()
-	resp, err := kvs.runningNode.Do(req)
+func (kvs *KeyValueStorage) retrieveNewData() error {
+	resp, err := kvs.runningSourceNode.Get(kvs.runningSourceNodeURL+"/internal/get")
 	if err != nil {
 		return errors.WithStack(err)
 	}
@@ -180,7 +176,7 @@ func (kvs *KeyValueStorage) getNewData() error {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return errors.Errorf("failed to get data from node (%s) with status code %s", kvs.runningNodeURL, resp.Status)
+		return errors.Errorf("failed to get data from node (%s) with status code %s", kvs.runningSourceNodeURL, resp.Status)
 	}
 
 	bodyData, err := ioutil.ReadAll(resp.Body)
@@ -193,41 +189,35 @@ func (kvs *KeyValueStorage) getNewData() error {
 	if err != nil {
 		return errors.WithStack(err)
 	}
+
 	kvs.SetNewRecords(body)
 	return nil
 }
 
 func (kvs *KeyValueStorage) sendNewData() error {
-	newRecords, err := kvs.GetNewRecords(0)
+	newRecords, err := kvs.GetNewRecords()
 	if err != nil {
-		return errors.WithStack(err)
+		return err
 	}
 
-	newRecordsBytes, err := json.Marshal(newRecords)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	resp, err := kvs.runningNode.Post(kvs.runningNodeURL+"/internal/set", "application/json", bytes.NewReader(newRecordsBytes))
+	resp, err := kvs.runningSourceNode.Post(kvs.runningSourceNodeURL+"/internal/set", "application/json", bytes.NewReader(newRecords))
 	if err != nil {
 		return errors.WithStack(err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return errors.Errorf("new data was not accepted by node (%s) with status code %s", kvs.runningNodeURL, resp.Status)
+		return errors.Errorf("new data was not accepted by node (%s) with status code %s", kvs.runningSourceNodeURL, resp.Status)
 	}
 
 	return nil
 }
 
-func (kvs *KeyValueStorage) GetNewRecords(lastUpdateTime int64) (map[string]StorageRecord, error) {
+func (kvs *KeyValueStorage) GetNewRecords() ([]byte, error) {
 	kvs.Lock()
 	defer kvs.Unlock()
 
-	if lastUpdateTime > kvs.lastUpdateTime {
-		return nil, errors.New("no new records")
-	}
-	return kvs.storage, nil
+	records, err := json.Marshal(kvs.storage)
+	return records, errors.WithStack(err)
 }
 
 func (kvs *KeyValueStorage) SetNewRecords(records map[string]StorageRecord) {
@@ -240,5 +230,4 @@ func (kvs *KeyValueStorage) SetNewRecords(records map[string]StorageRecord) {
 		}
 		kvs.storage[k] = newVal
 	}
-	kvs.lastUpdateTime = time.Now().Unix()
 }

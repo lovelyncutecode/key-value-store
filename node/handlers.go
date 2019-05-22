@@ -5,7 +5,6 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
-	"strconv"
 )
 
 func responseFormatter(handler func(w http.ResponseWriter, r *http.Request) (int, error)) http.HandlerFunc {
@@ -31,7 +30,7 @@ func setKey(w http.ResponseWriter, r *http.Request) (int, error) {
 		return http.StatusInternalServerError, err
 	}
 
-	keyValStorage.SaveRecord(body)
+	keyValStorage.SetRecord(body)
 	return 0, nil
 }
 
@@ -57,23 +56,12 @@ func getKey(w http.ResponseWriter, r *http.Request) (int, error) {
 }
 
 func getNewData(w http.ResponseWriter, r *http.Request) (int, error) {
-	q := r.URL.Query()
-	lastUpdateTime, err := strconv.Atoi(q.Get("last_update_time"))
+	newRecords, err := keyValStorage.GetNewRecords()
 	if err != nil {
 		return http.StatusBadRequest, err
 	}
 
-	newRecords, err := keyValStorage.GetNewRecords(int64(lastUpdateTime))
-	if err != nil {
-		return http.StatusBadRequest, err
-	}
-
-	resp, err := json.Marshal(newRecords)
-	if err != nil {
-		return http.StatusInternalServerError, err
-	}
-
-	_, err = w.Write(resp)
+	_, err = w.Write(newRecords)
 	if err != nil {
 		return http.StatusInternalServerError, err
 	}
