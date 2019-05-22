@@ -20,7 +20,7 @@ To run node that is connected to already running node use following structure:
 ```
 {
   "host": "127.0.0.1",
-  "port": 8080,
+  "port": 8081,
   "node_host": "127.0.0.1",
   "node_port": 8080,
   "request_timeout": 1
