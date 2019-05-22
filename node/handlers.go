@@ -75,12 +75,6 @@ func saveNewData(w http.ResponseWriter, r *http.Request) (int, error) {
 		return http.StatusBadRequest, err
 	}
 
-	var body map[string]StorageRecord
-	err = json.Unmarshal(bodyData, &body)
-	if err != nil {
-		return http.StatusInternalServerError, err
-	}
-
-	keyValStorage.SetNewRecords(body)
+	keyValStorage.SetNewRecords(bodyData)
 	return 0, nil
 }

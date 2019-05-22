@@ -16,21 +16,24 @@ import (
 )
 
 type (
+	// StorageRecord represents record in key-value storage. Contains actual value and last update timestamp
 	StorageRecord struct {
 		Value string
 		// updated field is used for conflict resolution
 		Updated int64
 	}
 
+	// KeyValueStorage represents node of key-value storage
 	KeyValueStorage struct {
 		*sync.Mutex
-		storage        map[string]StorageRecord
+		storage              map[string]StorageRecord
 		runningSourceNode    *http.Client
 		runningSourceNodeURL string
-		server         *http.Server
-		config         *KeyValueStorageConfig
+		server               *http.Server
+		config               *KeyValueStorageConfig
 	}
 
+	// KeyValueStorageConfig contains configurations for KeyValueStorage
 	KeyValueStorageConfig struct {
 		Host                      string  `json:"host"`
 		Port                      int     `json:"port"`
@@ -42,6 +45,7 @@ type (
 
 var keyValStorage *KeyValueStorage
 
+// NewKeyValueStorage creates new instance of KeyValueStorage and initializes its fields
 func NewKeyValueStorage(config *KeyValueStorageConfig) (*KeyValueStorage, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/set", responseFormatter(setKey))
@@ -54,10 +58,10 @@ func NewKeyValueStorage(config *KeyValueStorageConfig) (*KeyValueStorage, error)
 	}
 
 	keyValStorage = &KeyValueStorage{
-		Mutex:          new(sync.Mutex),
-		storage:        make(map[string]StorageRecord),
-		server:         srv,
-		config:         config,
+		Mutex:   new(sync.Mutex),
+		storage: make(map[string]StorageRecord),
+		server:  srv,
+		config:  config,
 	}
 	if config.SourceNodeHost == nil && config.SourceNodePort == nil {
 		return keyValStorage, nil
@@ -69,6 +73,7 @@ func NewKeyValueStorage(config *KeyValueStorageConfig) (*KeyValueStorage, error)
 	return keyValStorage, nil
 }
 
+// Run starts KeyValueStorage server that listens for connections and client (if corresponding configs are specified) that exchanges data with another node
 func (kvs *KeyValueStorage) Run() {
 	var goroutinesNum int
 	if kvs.runningSourceNode == nil {
@@ -113,6 +118,7 @@ func (kvs *KeyValueStorage) runNode(stop chan bool, wg *sync.WaitGroup) {
 	}
 }
 
+// SetRecord saves key-value record to KeyValueStorage
 func (kvs *KeyValueStorage) SetRecord(records map[string]string) {
 	keyValStorage.Lock()
 	defer keyValStorage.Unlock()
@@ -125,6 +131,7 @@ func (kvs *KeyValueStorage) SetRecord(records map[string]string) {
 	}
 }
 
+// GetRecord finds key-value record from KeyValueStorage by given key
 func (kvs *KeyValueStorage) GetRecord(key string) (string, error) {
 	keyValStorage.Lock()
 	defer keyValStorage.Unlock()
@@ -166,7 +173,7 @@ func (kvs *KeyValueStorage) exchangeNewData() error {
 }
 
 func (kvs *KeyValueStorage) retrieveNewData() error {
-	resp, err := kvs.runningSourceNode.Get(kvs.runningSourceNodeURL+"/internal/get")
+	resp, err := kvs.runningSourceNode.Get(kvs.runningSourceNodeURL + "/internal/get")
 	if err != nil {
 		return errors.WithStack(err)
 	}
@@ -184,13 +191,7 @@ func (kvs *KeyValueStorage) retrieveNewData() error {
 		return errors.WithStack(err)
 	}
 
-	var body map[string]StorageRecord
-	err = json.Unmarshal(bodyData, &body)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	kvs.SetNewRecords(body)
+	kvs.SetNewRecords(bodyData)
 	return nil
 }
 
@@ -212,6 +213,7 @@ func (kvs *KeyValueStorage) sendNewData() error {
 	return nil
 }
 
+// GetNewRecords returns existing records in KeyValueStorage in form of json
 func (kvs *KeyValueStorage) GetNewRecords() ([]byte, error) {
 	kvs.Lock()
 	defer kvs.Unlock()
@@ -220,7 +222,14 @@ func (kvs *KeyValueStorage) GetNewRecords() ([]byte, error) {
 	return records, errors.WithStack(err)
 }
 
-func (kvs *KeyValueStorage) SetNewRecords(records map[string]StorageRecord) {
+// SetNewRecords saves records (in form of json) to KeyValueStorage
+func (kvs *KeyValueStorage) SetNewRecords(recordsBytes []byte) error {
+	var records map[string]StorageRecord
+	err := json.Unmarshal(recordsBytes, &records)
+	if err != nil {
+		return err
+	}
+
 	kvs.Lock()
 	defer kvs.Unlock()
 
@@ -230,4 +239,5 @@ func (kvs *KeyValueStorage) SetNewRecords(records map[string]StorageRecord) {
 		}
 		kvs.storage[k] = newVal
 	}
+	return nil
 }
